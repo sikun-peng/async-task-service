@@ -1,0 +1,41 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# macOS metadata
+.DS_Store
+
+# IDE/editor
+.idea/
+.vscode/
+
+# Test artifacts
+*.db
+test_app.db
+.coverage
+htmlcov/
+pytest_cache/
+
+# Docker
+*.pid
+*.log
+
+# Distribution / packaging
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Environment files (if secrets included, keep out of git!)
+.env
+
+# Local notebooks or temp files
+*.ipynb_checkpoints
+*.swp
