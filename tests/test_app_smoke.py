@@ -16,9 +16,19 @@ def wait_for_status(job_id, expected, timeout=5.0):
 
 
 def test_submit_and_status_roundtrip():
+    # Simulate hashing a network payload (e.g., a packet string)
+    packet = {
+        "src_ip": "10.0.0.5",
+        "dst_ip": "10.0.0.200",
+        "src_port": 44321,
+        "dst_port": 443,
+        "protocol": "tcp",
+        "payload": "GET /login HTTP/1.1",
+    }
+
     create = httpx.post(
         f"{BASE_URL}/v1/jobs",
-        json={"type": "hash", "payload": {"data": "abc", "algo": "sha256"}},
+        json={"type": "hash", "payload": {"data": str(packet)}},
     )
     assert create.status_code == 200
     job_id = create.json()["jobId"]
@@ -30,9 +40,22 @@ def test_submit_and_status_roundtrip():
 
 def test_jobs_lists_recent_first():
     ids = []
-    for i in range(3):
+    packets = [
+        {
+            "src_ip": f"10.0.0.{i}",
+            "dst_ip": "10.0.0.200",
+            "src_port": 10000 + i,
+            "dst_port": 443,
+            "protocol": "tcp",
+            "payload": f"Packet {i} - SYN",
+        }
+        for i in range(3)
+    ]
+
+    for pkt in packets:
         r = httpx.post(
-            f"{BASE_URL}/v1/jobs", json={"type": "hash", "payload": {"data": str(i)}}
+            f"{BASE_URL}/v1/jobs",
+            json={"type": "hash", "payload": {"data": str(pkt)}},
         )
         assert r.status_code == 200
         ids.append(r.json()["jobId"])

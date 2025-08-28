@@ -1,12 +1,8 @@
-# tests/conftest.py
 import os
 import pytest
 from starlette.testclient import TestClient
 
-# Force DB for all tests
 os.environ["DATABASE_URL"] = "sqlite:///./test_app.db"
-
-# Import after env var is set
 from app import db as app_db
 import app.models  # ensure models are registered
 import app.main as main
@@ -26,6 +22,5 @@ def client():
     # Fresh schema for each test
     app_db.Base.metadata.drop_all(bind=app_db.engine)
     app_db.Base.metadata.create_all(bind=app_db.engine)
-
     with TestClient(main.app) as c:
         yield c

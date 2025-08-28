@@ -69,3 +69,7 @@ Environment variables (see `.env` or `docker-compose.yml`):
 - Jobs are executed by workers (RQ), not the API process.
 - Failed jobs trigger compensation automatically.
 - Metrics can be scraped by Prometheus and visualized in Grafana.
+
+EC2 instance
+swagger
+http://54.188.148.98:8000/docs

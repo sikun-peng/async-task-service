@@ -1,14 +1,10 @@
-# app/db.py
 import os
 from contextlib import contextmanager
-
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-# Use env var if set; default to a local sqlite file for dev/tests
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./jobs.db")
 
-# Create engine & session factory
 engine = create_engine(
     DATABASE_URL,
     future=True,
@@ -17,7 +13,6 @@ engine = create_engine(
 )
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False, future=True)
 
-# Declarative base for all ORM models
 Base = declarative_base()
 
 def init_db() -> None:

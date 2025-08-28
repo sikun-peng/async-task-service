@@ -29,7 +29,7 @@ class Job(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     last_error = Column(Text, nullable=True)
     compensation_error = Column(Text, nullable=True)
-    result_json = Column(Text, nullable=True)        # store result as text
+    result_json = Column(Text, nullable=True)
 
     def to_dict(self):
         return {
@@ -44,9 +44,3 @@ class Job(Base):
 
     def get_payload(self) -> Optional[dict]:
         return json.loads(self.payload) if self.payload else None
-
-
-class BlockedIP(Base):
-    __tablename__ = "blocked_ips"
-    ip = Column(String(64), primary_key=True)
-    reason = Column(String(128), nullable=True)

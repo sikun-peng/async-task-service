@@ -1,44 +1,49 @@
-# tests/test_retry.py
 import time
 import pytest
 from app.retry import retry_with_jitter
 
 
 def test_retry_succeeds_before_cap(monkeypatch):
+    # skip actual sleeping to make test run fast
     monkeypatch.setattr(time, "sleep", lambda s: None)
-    calls = {"n": 0}
 
-    def flaky():
-        calls["n"] += 1
-        if calls["n"] < 3:
-            raise RuntimeError("boom")
-        return "ok"
+    attempts = {"count": 0}
 
-    wrapped = retry_with_jitter(max_attempts=5, base_delay=0.1)(flaky)
-    assert wrapped() == "ok"
-    assert calls["n"] == 3
+    def flaky_request():
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise ConnectionError("Packet dropped")
+        return "ACK"
+
+    wrapped = retry_with_jitter(max_attempts=5, base_delay=0.1)(flaky_request)
+    assert wrapped() == "ACK"
+    assert attempts["count"] == 3
 
 
 def test_retry_reraises_on_final_attempt(monkeypatch):
     monkeypatch.setattr(time, "sleep", lambda s: None)
 
-    attempts = {"n": 0}
+    attempts = {"count": 0}
 
-    def always_bad():
-        attempts["n"] += 1
-        raise ValueError("still bad")
+    def always_bad_request():
+        attempts["count"] += 1
+        raise TimeoutError("Network timeout")
 
-    wrapped = retry_with_jitter(max_attempts=3, base_delay=0.1, exceptions=(ValueError,))(always_bad)
-    with pytest.raises(ValueError):
+    wrapped = retry_with_jitter(
+        max_attempts=3,
+        base_delay=0.1,
+        exceptions=(TimeoutError,)
+    )(always_bad_request)
+
+    with pytest.raises(TimeoutError):
         wrapped()
-    assert attempts["n"] == 3
+    assert attempts["count"] == 3
 
 
 def test_on_retry_callback_receives_attempt_and_sleep(monkeypatch):
-    # make sleep a no-op
     monkeypatch.setattr(time, "sleep", lambda s: None)
 
-    # force jitter sampler to return upper bound deterministically
+    # deterministically return upper bound for jitter
     def fake_uniform(a, b):
         return b
 
@@ -49,36 +54,44 @@ def test_on_retry_callback_receives_attempt_and_sleep(monkeypatch):
     def cb(attempt, err, sleep_s):
         seen.append((attempt, type(err).__name__, sleep_s))
 
-    count = {"n": 0}
+    attempts = {"count": 0}
 
-    def flaky():
-        count["n"] += 1
-        if count["n"] < 2:
-            raise RuntimeError("x")
-        return "ok"
+    def flaky_request():
+        attempts["count"] += 1
+        if attempts["count"] < 2:
+            raise ConnectionError("Transient drop")
+        return "ACK"
 
-    wrapped = retry_with_jitter(max_attempts=5, base_delay=0.2, on_retry=cb)(flaky)
-    assert wrapped() == "ok"
-    # One retry happened (attempt=1)
+    wrapped = retry_with_jitter(
+        max_attempts=5,
+        base_delay=0.2,
+        on_retry=cb
+    )(flaky_request)
+
+    assert wrapped() == "ACK"
     assert len(seen) == 1
     assert seen[0][0] == 1
-    assert seen[0][1] == "RuntimeError"
-    assert seen[0][2] >= 0.2 * (1 - 0.5)  # default jitter_ratio 0.5 lower bound
+    assert seen[0][1] == "ConnectionError"
+    assert seen[0][2] >= 0.2 * (1 - 0.5)  # lower bound with jitter ratio
 
 
 def test_non_matching_exception_is_not_retried(monkeypatch):
     monkeypatch.setattr(time, "sleep", lambda s: None)
 
-    calls = {"n": 0}
+    attempts = {"count": 0}
 
-    def oops():
-        calls["n"] += 1
-        raise KeyError("nope")
+    def bad_request():
+        attempts["count"] += 1
+        raise KeyError("Unexpected response")
 
-    wrapped = retry_with_jitter(max_attempts=5, exceptions=(RuntimeError,))(oops)
+    wrapped = retry_with_jitter(
+        max_attempts=5,
+        exceptions=(ConnectionError,)
+    )(bad_request)
+
     with pytest.raises(KeyError):
         wrapped()
-    assert calls["n"] == 1
+    assert attempts["count"] == 1
 
 
 def test_jitter_bounds(monkeypatch):
@@ -86,24 +99,30 @@ def test_jitter_bounds(monkeypatch):
 
     def fake_uniform(a, b):
         samples.append((a, b))
-        return a  # return lower bound to be deterministic
+        return a  # lower bound for determinism
 
     monkeypatch.setattr("app.retry.random.uniform", fake_uniform)
     monkeypatch.setattr(time, "sleep", lambda s: None)
 
-    tries = {"n": 0}
+    attempts = {"count": 0}
 
-    def flaky():
-        tries["n"] += 1
-        if tries["n"] < 3:
-            raise RuntimeError("boom")
-        return "ok"
+    def flaky_request():
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise ConnectionError("Packet lost")
+        return "ACK"
 
-    wrapped = retry_with_jitter(max_attempts=5, base_delay=0.5, backoff=2.0, jitter_ratio=0.4)(flaky)
-    assert wrapped() == "ok"
+    wrapped = retry_with_jitter(
+        max_attempts=5,
+        base_delay=0.5,
+        backoff=2.0,
+        jitter_ratio=0.4
+    )(flaky_request)
 
-    # Two retries happened; verify bounds for attempt 1 and 2
-    # attempt=1: delay=0.5 * 2^(0)=0.5 -> bounds [0.3, 0.7]
-    # attempt=2: delay=0.5 * 2^(1)=1.0 -> bounds [0.6, 1.4]
+    assert wrapped() == "ACK"
+
+    # Two retries happened → check jitter bounds
+    # attempt=1 → base_delay=0.5, bounds [0.3, 0.7]
+    # attempt=2 → base_delay=1.0, bounds [0.6, 1.4]
     assert samples[0] == (0.5 * (1 - 0.4), 0.5 * (1 + 0.4))
     assert samples[1] == (1.0 * (1 - 0.4), 1.0 * (1 + 0.4))
