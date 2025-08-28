@@ -1,12 +1,11 @@
-# tests/test_integration.py
 import time
 import httpx
 import pytest
 import concurrent.futures
 import random
 
-BASE_URL = "http://localhost:8000"
-# BASE_URL = "http://54.188.148.98:8000"
+# BASE_URL = "http://localhost:8000"
+BASE_URL = "http://54.188.148.98:8000"
 
 def wait_for_status(job_id, expected, timeout=5.0):
     """Poll /v1/jobs/{id} until status in expected or timeout."""

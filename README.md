@@ -50,6 +50,75 @@ Services:
 - Postgres: `localhost:5432`
 - RQ worker(s): background containers consuming Redis queue
 
+
+
+---
+
+### Job Types
+
+The service currently supports **two job types** to demonstrate retries, compensation, and idempotency:
+
+#### 1. Hash Job (`type: "hash"`)
+- **Purpose**: Generate a deterministic hash (digest) of an input string or bytes.
+- **Execute**: Uses the algorithm (default: `sha256`) to compute a hash of the provided payload.
+- **Compensate**: Does nothing meaningful (just returns `{ "compensated": true }`) since hashing is side-effect free.
+- **Example**
+  ```bash
+  curl -s -X POST http://localhost:8000/v1/jobs \
+    -H 'Content-Type: application/json' \
+    -d '{"type":"hash","payload":{"data":"hello"}}'
+  ```
+Response:
+  ```json
+  { "jobId": "uuid" }
+  ```
+Status result:
+  ```json
+  {
+    "id": "uuid",
+    "type": "hash",
+    "status": "SUCCEEDED",
+    "result": {
+      "algo": "sha256",
+      "digest": "2cf24dba5fb0..."
+    }
+  }
+````
+
+#### 2. Block IP Job (type: "block_ip")
+- **Purpose**: Simulate a side-effectful operation by blocking an IP address.
+- **Execute**: Marks the given IP as “blocked” with a reason (policy/suspicious/etc.).
+(No actual persistence in this demo — just returns a simulated result.)
+- **Compensate**: If execution fails, runs a simulated “unblock” action.
+For example, returns { "ip": "192.168.1.123", "unblocked": true }.
+- **Example**
+
+  ```bash
+  curl -s -X POST http://localhost:8000/v1/jobs \
+    -H 'Content-Type: application/json' \
+    -d '{"type":"block_ip","payload":{"ip":"192.168.1.123","reason":"suspicious"}}'
+  ```
+  
+Response:
+  ```json
+  { "jobId": "uuid" }
+  ```
+
+Status result:
+  ```json
+  {
+    "id": "uuid",
+    "type": "block_ip",
+    "status": "SUCCEEDED",
+    "result": {
+      "ip": "192.168.1.123",
+      "blocked": true,
+      "reason": "suspicious"
+    }
+  }
+  ```
+
+
 ---
 
 ## Endpoints
@@ -121,10 +190,17 @@ cd async-task-service
 docker-compose up -d --build
 ```
 
-Access:
-- API: `http://54.188.148.98:8000/docs`
-- Prometheus: `http://54.188.148.98:9090`
-- Metrics: `http://54.188.148.98:8000/metrics`
+### Swagger UI
+![Swagger UI](./docs/EC2%20Swagger.png)
+- Link: `http://54.188.148.98:8000/docs`
+
+### Metrics UI
+![Prometheus](./docs/EC2%20Metrics.png)
+- Link: `http://54.188.148.98:8000/metrics`
+
+### Prometheus Metrics
+![Prometheus](./docs/EC2%20Prometheus.png)
+- Link: `http://54.188.148.98:9090`
 
 ### Example against EC2
 
@@ -138,15 +214,20 @@ Check metrics:
 curl -s http://54.188.148.98:8000/metrics | grep api_requests_total
 ```
 
-Run integration tests:
-```bash
-Change in pytest -q tests/test_integration.py
-BASE_URL=http://54.188.148.98:8000 
+To Run integration tests:
+```
+In tests/test_integration.py
+update BASE_URL= "http://54.188.148.98:8000"
+
+Run integration test 
 pytest -q tests/test_integration.py
 ```
 
 
 
 ## Grafana Cloud
+
+![Grafana Dashboard](./docs/Grafana%20Cloud.png)
+
 - Added Grafana dashboard JSON (Prometheus datasource: `async-task-service`)
 - link https://sikunpeng.grafana.net/goto/R3nCluXHR?orgId=1
