@@ -2,9 +2,11 @@
 import time
 import httpx
 import pytest
+import concurrent.futures
+import random
 
-# BASE_URL = "http://localhost:8000"
-BASE_URL = "http://54.188.148.98:8000"
+BASE_URL = "http://localhost:8000"
+# BASE_URL = "http://54.188.148.98:8000"
 
 def wait_for_status(job_id, expected, timeout=5.0):
     """Poll /v1/jobs/{id} until status in expected or timeout."""
@@ -95,3 +97,35 @@ def test_block_ip_missing_ip_fails():
     assert r.status_code == 400
     body = r.json()
     assert "block_ip requires 'ip'" in body["detail"]
+
+
+@pytest.mark.integration
+def test_concurrent_50_hash_jobs():
+    """Submit 50 hash jobs in parallel and ensure they all complete."""
+    payloads = [{"data": f"bulk-{i}-{random.randint(1,100)}"} for i in range(50)]
+
+    job_ids = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [
+            executor.submit(
+                httpx.post,
+                f"{BASE_URL}/v1/jobs",
+                json={"type": "hash", "payload": p},
+            )
+            for p in payloads
+        ]
+
+        for f in futures:
+            r = f.result()
+            assert r.status_code == 200
+            job_ids.append(r.json()["jobId"])
+
+    # Wait for all jobs to finish
+    completed = []
+    for jid in job_ids:
+        result = wait_for_status(jid, ["SUCCEEDED"], timeout=15.0)
+        assert result["status"] == "SUCCEEDED"
+        completed.append(jid)
+
+    # Sanity check: all 50 finished
+    assert len(completed) == 50

@@ -1,75 +1,152 @@
 # Async Task Service
 
-A minimal async job queue with retries, compensation, metrics, and idempotency.  
+A minimal async task queue with retries, compensation, idempotency, and observability.
+Built with **FastAPI**, **Postgres**, **Redis**, **RQ**, **Prometheus**, and **Grafana**.
 
 ## Features
-- **Job submission**: `POST /v1/jobs { type, payload, idempotencyKey? }` → returns `jobId`.
-- **Job status**: `GET /v1/jobs/{jobId}` → status, attempts, errors, timestamps.
-- **Job list**: `GET /v1/jobs` → list of recent jobs (newest first).
-- **Retries**: Exponential backoff with jitter (`retry.py`), configurable via `.env`.
-- **Compensation**: Runs compensating action if job ultimately fails.
-- **Idempotency**: Duplicate submissions (same `idempotencyKey`) return the same job.
-- **Backpressure**: Bounded queue (RQ).
-- **Observability**: 
-  - Prometheus metrics at `/metrics` (via `prometheus-fastapi-instrumentator`)
-  - Grafana dashboard (compose file includes Prometheus + Grafana stack).
+
+- **Submit Job** – `POST /v1/jobs { type, payload, idempotencyKey? } → { jobId }`
+- **Job Status** – `GET /v1/jobs/{jobId} → { status, attempts, lastError?, startedAt?, completedAt?, result? }`
+- **Workers & Queue** – Redis + RQ; fixed-size worker pool (configurable).
+- **Retries** – Exponential backoff + jitter; max attempts (configurable).
+- **Compensation** – Per job-type `compensate(...)` runs on final failure → `COMPENSATED`.
+- **Idempotency** – Same `idempotencyKey` returns the first job.
+- **Backpressure** – Bounded queue → returns **429 Too Many Requests** when full.
+- **Observability**
+  - `/metrics` via `prometheus_fastapi_instrumentator`
+  - Custom counters:
+    - `api_requests_total` – increments on each `POST /v1/jobs`
+    - `jobs_processed_total{status=...}` – increments on terminal status in worker
+  - Simple dashboard with Grafana
+
+---
+
+## Architecture (high-level)
+
+```
+FastAPI  →  Postgres (job state)
+        →  Redis (queue) → RQ Worker → Tasks (retry + compensation)
+        →  Prometheus (/metrics) → Grafana
+```
+
+---
+
+## Local Dev
+
+### Requirements
+- Python 3.11+
+- Docker & Docker Compose v2
+
+### One-liner (Docker)
+```bash
+docker compose up -d --build
+```
+
+Services:
+- API (FastAPI): `http://localhost:8000`
+- OpenAPI/Swagger: `http://localhost:8000/docs`
+- Prometheus: `http://localhost:9090`
+- Redis: `localhost:6379`
+- Postgres: `localhost:5432`
+- RQ worker(s): background containers consuming Redis queue
+
+---
 
 ## Endpoints
-- `POST /v1/jobs`  
-  Submit a job. Example payloads:
+
+- **Health**
+  `GET /health` → `{ "status": "ok" }`
+
+- **Submit Job**
+  `POST /v1/jobs`
+  Body:
   ```json
-  { "type": "hash", "payload": { "data": "abc", "algo": "sha256" } }
-  { "type": "hash", "payload": { "fail": true } }
-  { "type": "block_ip", "payload": { "ip": "1.2.3.4", "reason": "test" } }
+  { "type": "hash", "payload": { "data": "hello" }, "idempotencyKey": "optional-key" }
   ```
-- `GET /v1/jobs/{id}`
-- `GET /v1/jobs`
-- `GET /metrics`  
+  or
+  ```json
+  { "type": "block_ip", "payload": { "ip": "192.168.1.1", "reason": "suspicious" } }
+  ```
+  Response:
+  ```json
+  { "jobId": "uuid" }
+  ```
 
-## Job Types
-- **hash**: Computes a digest of given data (supports `fail: true` to simulate errors).
-- **block_ip**: Inserts/removes IPs in the DB.
+- **Job Status**
+  `GET /v1/jobs/{jobId}
+  Response (example):
+  ```json
+  {
+    "id": "uuid",
+    "type": "hash",
+    "status": "SUCCEEDED",
+    "attempts": 1,
+    "lastError": null,
+    "startedAt": "2025-08-28T00:00:00.000000",
+    "completedAt": "2025-08-28T00:00:01.234567",
+    "result": { "algo": "sha256", "digest": "..." }
+  }
+  ```
 
-## Running locally
-### Prerequisites
-- Docker + docker-compose
-- Python 3.9+ (for running tests)
+- **List Jobs**
+  `GET /v1/jobs` → most recent first
 
-### Run services
-```sh
-docker-compose up --build
+---
+
+## cURL Quickstart
+
+Submit a `hash` job:
+```bash
+curl -s -X POST http://localhost:8000/v1/jobs   -H 'Content-Type: application/json'   -d '{"type":"hash","payload":{"data":"hi"}}'
 ```
 
-This starts:
-- `tasksvc_app`: FastAPI service on [http://localhost:8000](http://localhost:8000)
-- `tasksvc_worker`: RQ worker
-- `redis`: Redis backend
-- `prometheus`: [http://localhost:9090](http://localhost:9090)
-- `grafana`: [http://localhost:3000](http://localhost:3000) (default admin/admin)
-
-### Running tests
-Install dependencies locally:
-```sh
-pip install -r requirements.txt
-pytest -q
+Check job status (replace `JOB_ID`):
+```bash
+curl -s http://localhost:8000/v1/jobs/JOB_ID | jq
 ```
 
-Tests include:
-- **Smoke tests**: API endpoints
-- **Integration tests**: Retry → fail → compensate flow
-- **Retry tests**: Jitter and backoff correctness
+Submit a `block_ip` job:
+```bash
+curl -s -X POST http://localhost:8000/v1/jobs   -H 'Content-Type: application/json'   -d '{"type":"block_ip","payload":{"ip":"192.168.1.123","reason":"test"}}'
+```
 
-## Config
-Environment variables (see `.env` or `docker-compose.yml`):
-- `DATABASE_URL` – DB connection string
-- `REDIS_URL` – Redis connection (default `redis://redis:6379/0`)
-- `RETRY_MAX_ATTEMPTS`, `RETRY_BASE_DELAY`, `RETRY_BACKOFF`, `RETRY_JITTER_RATIO`
+---
 
-## Notes
-- Jobs are executed by workers (RQ), not the API process.
-- Failed jobs trigger compensation automatically.
-- Metrics can be scraped by Prometheus and visualized in Grafana.
+## EC2 Deployment Notes
 
-EC2 instance
-swagger
-http://54.188.148.98:8000/docs
+### Running
+```bash
+git clone https://github.com/sikun-peng/async-task-service.git
+cd async-task-service
+docker-compose up -d --build
+```
+
+Access:
+- API: `http://54.188.148.98:8000/docs`
+- Prometheus: `http://54.188.148.98:9090`
+- Metrics: `http://54.188.148.98:8000/metrics`
+
+### Example against EC2
+
+Submit:
+```bash
+curl -s -X POST http://54.188.148.98:8000/v1/jobs   -H 'Content-Type: application/json'   -d '{"type":"hash","payload":{"data":"hi"}}'
+```
+
+Check metrics:
+```bash
+curl -s http://54.188.148.98:8000/metrics | grep api_requests_total
+```
+
+Run integration tests:
+```bash
+Change in pytest -q tests/test_integration.py
+BASE_URL=http://54.188.148.98:8000 
+pytest -q tests/test_integration.py
+```
+
+
+
+## Grafana Cloud
+- Added Grafana dashboard JSON (Prometheus datasource: `async-task-service`)
+- link https://sikunpeng.grafana.net/goto/R3nCluXHR?orgId=1

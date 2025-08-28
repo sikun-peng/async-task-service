@@ -1,10 +1,10 @@
+import os
 import uuid
 import json
 from datetime import datetime
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, status
 from sqlalchemy.orm import Session
 from prometheus_fastapi_instrumentator import Instrumentator
-
 from .db import SessionLocal, Base, engine
 from .models import Job, JobStatus
 from . import tasks
@@ -12,17 +12,16 @@ from .redis import queue
 from .metrics import REQUEST_COUNT
 
 
+MAX_QUEUE_SIZE = int(os.getenv("MAX_QUEUE_SIZE", "1000"))
+
 app = FastAPI(title="Async Task Service", version="1.0")
 Instrumentator().instrument(app).expose(app)
 
-
 @app.on_event("startup")
 def on_startup():
-    # Initialize DB schema
     Base.metadata.create_all(bind=engine)
 
 
-# --- Dependency: DB session ---
 def get_db():
     db = SessionLocal()
     try:
@@ -40,6 +39,7 @@ def health():
 # --- POST /v1/jobs ---
 @app.post("/v1/jobs")
 def create_job(job: dict, db: Session = Depends(get_db)):
+    # Custom counter for submission endpoint
     REQUEST_COUNT.inc()
 
     job_type = job.get("type")
@@ -52,9 +52,21 @@ def create_job(job: dict, db: Session = Depends(get_db)):
     if job_type not in ("hash", "block_ip"):
         raise HTTPException(status_code=400, detail=f"Unsupported job type: {job_type}")
 
-    # minimal validation for block_ip
     if job_type == "block_ip" and not payload.get("ip"):
         raise HTTPException(status_code=400, detail="block_ip requires 'ip' in payload")
+
+    # Backpressure: bounded queue → 429 when full
+    try:
+        q_len = len(queue)  # RQ Queue implements __len__ -> count
+    except Exception:
+        q_len = 0  # fail-open if Redis transiently unavailable
+    if q_len >= MAX_QUEUE_SIZE:
+        # Optionally advise a retry-after; client can respect it
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Queue is full (size={q_len}, max={MAX_QUEUE_SIZE}). Try again later.",
+            headers={"Retry-After": "3"},
+        )
 
     # Idempotency check
     if idempotency_key:
@@ -76,7 +88,9 @@ def create_job(job: dict, db: Session = Depends(get_db)):
     db.commit()
 
     # Enqueue into worker
+    # (Using the plain RQ queue; worker pool size is controlled by how many workers you run)
     queue.enqueue(tasks.process_job, job_id, job_type, payload)
+
     return {"jobId": job_id}
 
 
@@ -87,7 +101,7 @@ def get_job(job_id: str, db: Session = Depends(get_db)):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     resp = job.to_dict()
-    # Augment with "result" for callers/tests that expect it
+    # Include "result" if present
     if getattr(job, "result_json", None) and "result" not in resp:
         try:
             resp["result"] = json.loads(job.result_json)
@@ -100,7 +114,6 @@ def get_job(job_id: str, db: Session = Depends(get_db)):
 @app.get("/v1/jobs")
 def list_jobs(db: Session = Depends(get_db)):
     jobs = db.query(Job).order_by(Job.created_at.desc()).all()
-    # include "result" in list too
     out = []
     for j in jobs:
         d = j.to_dict()
